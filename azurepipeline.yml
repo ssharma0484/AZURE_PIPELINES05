@@ -1,0 +1,214 @@
+trigger:
+- none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+parameters:
+- name: deploymentAction
+  displayName: 'Select Deployment Action'
+  type: string
+  default: 'Deploy-Canary'
+  values:
+    - Deploy-Canary
+    - Deploy-Production
+    - Rollback
+
+variables:
+  pythonVersion: '3.11'
+
+  # CHANGE THESE VALUES
+  azureSubscription: 'Azure-Service-Connection'
+  webAppName: 'shopping-webapp'
+  resourceGroupName: 'test'
+  slotName: 'canary'
+
+stages:
+
+##########################################################
+# BUILD
+##########################################################
+
+- stage: Build
+  displayName: Build Application
+
+  jobs:
+
+  - job: Build
+
+    steps:
+
+    - checkout: self
+
+    - task: UsePythonVersion@0
+      displayName: Use Python
+      inputs:
+        versionSpec: '$(pythonVersion)'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: Install Dependencies
+
+    - script: |
+        python app.py &
+        sleep 10
+        curl --fail http://127.0.0.1:8000/health
+      displayName: Health Check
+
+    - task: ArchiveFiles@2
+      displayName: Create ZIP
+      inputs:
+        rootFolderOrFile: '$(Build.SourcesDirectory)'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: '$(Build.ArtifactStagingDirectory)/app.zip'
+        replaceExistingArchive: true
+
+    - publish: $(Build.ArtifactStagingDirectory)/app.zip
+      artifact: drop
+
+##########################################################
+# DEPLOY TO CANARY
+##########################################################
+
+- stage: DeployCanary
+
+  displayName: Deploy to Canary
+
+  dependsOn: Build
+
+  condition: and
+    (
+      succeeded(),
+      eq('${{ parameters.deploymentAction }}','Deploy-Canary')
+    )
+
+  jobs:
+
+  - deployment: Canary
+
+    environment: Canary
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - download: current
+            artifact: drop
+
+          - task: AzureWebApp@1
+            displayName: Deploy to Canary Slot
+
+            inputs:
+
+              azureSubscription: $(azureSubscription)
+
+              appType: webAppLinux
+
+              appName: $(webAppName)
+
+              deployToSlotOrASE: true
+
+              resourceGroupName: $(resourceGroupName)
+
+              slotName: $(slotName)
+
+              package: $(Pipeline.Workspace)/drop/app.zip
+
+              runtimeStack: 'PYTHON|3.11'
+
+              startUpCommand: './startup.sh'
+
+##########################################################
+# DEPLOY TO PRODUCTION
+##########################################################
+
+- stage: DeployProduction
+
+  displayName: Deploy Production
+
+  dependsOn: Build
+
+  condition: and
+    (
+      succeeded(),
+      eq('${{ parameters.deploymentAction }}','Deploy-Production')
+    )
+
+  jobs:
+
+  - deployment: Production
+
+    environment: Production
+
+    strategy:
+
+      runOnce:
+
+        deploy:
+
+          steps:
+
+          - download: current
+            artifact: drop
+
+          - task: AzureWebApp@1
+
+            displayName: Deploy Production
+
+            inputs:
+
+              azureSubscription: $(azureSubscription)
+
+              appType: webAppLinux
+
+              appName: $(webAppName)
+
+              package: $(Pipeline.Workspace)/drop/app.zip
+
+              runtimeStack: 'PYTHON|3.11'
+
+              startUpCommand: './startup.sh'
+
+##########################################################
+# ROLLBACK
+##########################################################
+
+- stage: Rollback
+
+  displayName: Rollback
+
+  dependsOn: Build
+
+  condition: and
+    (
+      succeeded(),
+      eq('${{ parameters.deploymentAction }}','Rollback')
+    )
+
+  jobs:
+
+  - job: RollbackJob
+
+    steps:
+
+    - task: AzureAppServiceManage@0
+
+      displayName: Swap Slots
+
+      inputs:
+
+        azureSubscription: $(azureSubscription)
+
+        Action: 'Swap Slots'
+
+        WebAppName: $(webAppName)
+
+        ResourceGroupName: $(resourceGroupName)
+
+        SourceSlot: $(slotName)
