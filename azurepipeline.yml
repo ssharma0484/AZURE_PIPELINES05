@@ -18,7 +18,7 @@ variables:
   pythonVersion: '3.11'
 
   # CHANGE THESE VALUES
-  azureSubscription: 'Azure-Service-Connection'
+  azureSubscription: 'sp_github'
   webAppName: 'shopping-webapp'
   resourceGroupName: 'test'
   slotName: 'canary'
